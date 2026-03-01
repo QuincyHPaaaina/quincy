@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Candy Grab!</title>
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #f0d6f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: 'Caveat', cursive;
+        }
+        canvas { border: 4px solid #222; display: block; }
+    </style>
+</head>
+<body>
+<canvas id="game" width="650" height="450"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx    = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const GRAV           = 0.5;
+const BASE_JUMP      = -13;
+const BASE_SPD       = 4.2;
+const GND            = H - 60;
+const BASE_W         = 28, BASE_H = 44;
+const GAME_TIME      = 60;
+const MAX_SIZE       = 2.6;
+const SIZE_PER_CANDY = 0.09;
+
+const CANDY_COLORS = ['#ff4466','#ff9922','#ffdd00','#aa44ff','#44ddaa','#ff66cc','#55bbff'];
+const CANDY_SHAPES = ['circle','star','diamond','heart'];
+
+// Platforms [x, y, width]
+const PLATS = [
+    [0,   GND, W  ],   // ground
+    [215, 315, 220],   // middle
+    [50,  370, 120],   // left low
+    [480, 370, 120],   // right low
+    [80,  248, 110],   // left high
+    [460, 248, 110],   // right high
+    [270, 180, 110],   // top center
+];
+
+// ── Input ─────────────────────────────────────────────────────────────────
+const keys = {};
+window.addEventListener('keydown', e => {
+    keys[e.key] = true;
+    if ([' ','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
+    if ((state === 'over' || state === 'start') && (e.code === 'Space' || e.key === 'Enter')) init();
+});
+window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// ── Doodle helpers ────────────────────────────────────────────────────────
+function j(a = 3) { return (Math.random() - 0.5) * a * 2; }
+
+function doodleRect(x, y, w, h, fill) {
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.moveTo(x+j(.3),   y+j(.3));   ctx.lineTo(x+w+j(.3), y+j(.3));
+    ctx.lineTo(x+w+j(.3), y+h+j(.3)); ctx.lineTo(x+j(.3),   y+h+j(.3));
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 2.5; ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x+j(1.5), y+j(1.5));
+    ctx.bezierCurveTo(x+w*.35+j(2), y+j(2.5),     x+w*.65+j(2), y+j(2.5),     x+w+j(1.5), y+j(1.5));
+    ctx.bezierCurveTo(x+w+j(2.5),   y+h*.35+j(2), x+w+j(2.5),   y+h*.65+j(2), x+w+j(1.5), y+h+j(1.5));
+    ctx.bezierCurveTo(x+w*.65+j(2), y+h+j(2.5),   x+w*.35+j(2), y+h+j(2.5),   x+j(1.5),   y+h+j(1.5));
+    ctx.bezierCurveTo(x+j(2.5),     y+h*.65+j(2), x+j(2.5),     y+h*.35+j(2), x+j(1.5),   y+j(1.5));
+    ctx.stroke();
+}
+
+function doodleCircle(cx, cy, r, fill) {
+    const k = r * 0.55;
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.moveTo(cx+j(.8), cy-r+j(.8));
+    ctx.bezierCurveTo(cx+k+j(2), cy-r+j(1.2), cx+r+j(1.2), cy-k+j(2), cx+r+j(.8), cy+j(.8));
+    ctx.bezierCurveTo(cx+r+j(1.2), cy+k+j(2), cx+k+j(2), cy+r+j(1.2), cx+j(.8),   cy+r+j(.8));
+    ctx.bezierCurveTo(cx-k+j(2), cy+r+j(1.2), cx-r+j(1.2), cy+k+j(2), cx-r+j(.8), cy+j(.8));
+    ctx.bezierCurveTo(cx-r+j(1.2), cy-k+j(2), cx-k+j(2), cy-r+j(1.2), cx+j(.8),   cy-r+j(.8));
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 2.5; ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx+j(1.5), cy-r+j(1.5));
+    ctx.bezierCurveTo(cx+k+j(3), cy-r+j(2), cx+r+j(2), cy-k+j(3), cx+r+j(1.5), cy+j(1.5));
+    ctx.bezierCurveTo(cx+r+j(2), cy+k+j(3), cx+k+j(3), cy+r+j(2), cx+j(1.5),   cy+r+j(1.5));
+    ctx.bezierCurveTo(cx-k+j(3), cy+r+j(2), cx-r+j(2), cy+k+j(3), cx-r+j(1.5), cy+j(1.5));
+    ctx.bezierCurveTo(cx-r+j(2), cy-k+j(3), cx-k+j(3), cy-r+j(2), cx+j(1.5),   cy-r+j(1.5));
+    ctx.closePath(); ctx.stroke();
+}
+
+// ── Game state ────────────────────────────────────────────────────────────
+let p1, p2, candies, floaters, state, timeLeft, timerHandle;
+
+function makePlayer(x, color, ctrl) {
+    return {
+        x, y: GND - BASE_H,
+        vx: 0, vy: 0,
+        onGround: false,
+        color, ctrl,
+        size: 1.0,
+        score: 0,
+        facing: color === '#4a90d9' ? 1 : -1,
+        bobPhase: 0,
+    };
+}
+
+function init() {
+    clearInterval(timerHandle);
+    p1 = makePlayer(70,          '#4a90d9', { left: 'a', right: 'd', jump: 'w' });
+    p2 = makePlayer(W-70-BASE_W, '#e05252', { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp' });
+    candies  = [];
+    floaters = [];
+    timeLeft = GAME_TIME;
+    for (let i = 0; i < 8; i++) spawnCandy();
+    state = 'play';
+    timerHandle = setInterval(() => {
+        if (state !== 'play') { clearInterval(timerHandle); return; }
+        timeLeft--;
+        if (timeLeft <= 0) { timeLeft = 0; state = 'over'; clearInterval(timerHandle); }
+    }, 1000);
+}
+
+function spawnCandy() {
+    const [px, py, pw] = PLATS[Math.floor(Math.random() * PLATS.length)];
+    const margin = 18;
+    candies.push({
+        x: px + margin + Math.random() * Math.max(10, pw - margin * 2),
+        y: py - 13,
+        color: CANDY_COLORS[Math.floor(Math.random() * CANDY_COLORS.length)],
+        shape: CANDY_SHAPES[Math.floor(Math.random() * CANDY_SHAPES.length)],
+        bob:   Math.random() * Math.PI * 2,
+        r: 10,
+    });
+}
+
+// ── Physics ───────────────────────────────────────────────────────────────
+function landOn(ent, w, h) {
+    ent.onGround = false;
+    for (const [px, py, pw] of PLATS) {
+        const bot     = ent.y + h;
+        const prevBot = bot - ent.vy;
+        if (ent.x + w > px && ent.x < px + pw && bot >= py && prevBot <= py + 8) {
+            ent.y = py - h; ent.vy = 0; ent.onGround = true;
+        }
+    }
+}
+
+function tickPlayer(p) {
+    const pw  = BASE_W * p.size;
+    const ph  = BASE_H * p.size;
+    // Bigger = slower movement and lower jump (sqrt so it's not too harsh)
+    const spd = BASE_SPD  / Math.sqrt(p.size);
+    const jmp = BASE_JUMP / Math.sqrt(p.size);
+
+    if      (keys[p.ctrl.left])  { p.vx = -spd; p.facing = -1; }
+    else if (keys[p.ctrl.right]) { p.vx =  spd; p.facing =  1; }
+    else                           p.vx *= 0.78;
+
+    if (keys[p.ctrl.jump] && p.onGround) p.vy = jmp;
+
+    p.bobPhase += 0.12;
+    p.vy += GRAV;
+    p.x = Math.max(0, Math.min(W - pw, p.x + p.vx));
+    p.y += p.vy;
+    landOn(p, pw, ph);
+}
+
+function checkPickup(p) {
+    const pw  = BASE_W * p.size;
+    const ph  = BASE_H * p.size;
+    const pcx = p.x + pw / 2;
+    const pcy = p.y + ph / 2;
+    for (let i = candies.length - 1; i >= 0; i--) {
+        const c = candies[i];
+        if (Math.hypot(pcx - c.x, pcy - c.y) < pw * 0.55 + c.r) {
+            candies.splice(i, 1);
+            p.score++;
+            p.size = Math.min(MAX_SIZE, p.size + SIZE_PER_CANDY);
+            floaters.push({ x: c.x, y: c.y - 8, color: p.color, alpha: 1 });
+            setTimeout(spawnCandy, 700 + Math.random() * 800);
+        }
+    }
+}
+
+function update() {
+    if (state !== 'play') return;
+    tickPlayer(p1);
+    tickPlayer(p2);
+    checkPickup(p1);
+    checkPickup(p2);
+    for (let i = floaters.length - 1; i >= 0; i--) {
+        floaters[i].y -= 1.2;
+        floaters[i].alpha -= 0.022;
+        if (floaters[i].alpha <= 0) floaters.splice(i, 1);
+    }
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────
+function drawBG() {
+    ctx.fillStyle = '#fffef2';
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(150,195,255,0.5)'; ctx.lineWidth = 1;
+    for (let y = 28; y < H; y += 28) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(255,130,130,0.4)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(36, 0); ctx.lineTo(36, H); ctx.stroke();
+}
+
+function drawPlatforms() {
+    for (const [px, py, pw] of PLATS) {
+        const ph = px === 0 ? H - py : 14;
+        doodleRect(px, py, pw, ph, '#7cb87c');
+    }
+}
+
+function drawStar(x, y, r, fill) {
+    ctx.fillStyle = fill; ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+        const a1 = (i * 72 - 90) * Math.PI / 180;
+        const a2 = (i * 72 + 36 - 90) * Math.PI / 180;
+        const ox = x + r * Math.cos(a1) + j(.5), oy = y + r * Math.sin(a1) + j(.5);
+        const ix = x + r * 0.45 * Math.cos(a2) + j(.5), iy = y + r * 0.45 * Math.sin(a2) + j(.5);
+        i === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
+        ctx.lineTo(ix, iy);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+}
+
+function drawDiamond(x, y, r, fill) {
+    ctx.fillStyle = fill; ctx.strokeStyle = '#111'; ctx.lineWidth = 2; ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x + j(.5), y - r + j(.5)); ctx.lineTo(x + r + j(.5), y + j(.5));
+    ctx.lineTo(x + j(.5), y + r + j(.5)); ctx.lineTo(x - r + j(.5), y + j(.5));
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+}
+
+function drawHeart(x, y, r, fill) {
+    ctx.fillStyle = fill; ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y + r * 0.3);
+    ctx.bezierCurveTo(x,     y - r * 0.4, x - r, y - r * 0.4, x - r, y + r * 0.15);
+    ctx.bezierCurveTo(x - r, y + r * 0.7, x,     y + r,        x,     y + r);
+    ctx.bezierCurveTo(x,     y + r,        x + r, y + r * 0.7, x + r, y + r * 0.15);
+    ctx.bezierCurveTo(x + r, y - r * 0.4, x,     y - r * 0.4, x,     y + r * 0.3);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+}
+
+function drawCandy(c) {
+    const bob = Math.sin(Date.now() / 380 + c.bob) * 3;
+    ctx.save();
+    ctx.translate(c.x, c.y + bob);
+    ctx.shadowColor = c.color; ctx.shadowBlur = 10;
+    if      (c.shape === 'circle')  doodleCircle(0, 0, c.r, c.color);
+    else if (c.shape === 'star')    drawStar(0, 0, c.r, c.color);
+    else if (c.shape === 'diamond') drawDiamond(0, 0, c.r, c.color);
+    else                            drawHeart(0, 0, c.r, c.color);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+}
+
+function drawPlayer(p) {
+    const s  = p.size;
+    const pw = BASE_W * s;
+    const ph = BASE_H * s;
+    const walk = Math.abs(p.vx) > 0.4 ? Math.sin(p.bobPhase) * 6 : 0;
+
+    ctx.save();
+    // Anchor at feet-center so the player grows upward from the ground
+    ctx.translate(p.x + pw / 2, p.y + ph);
+    ctx.scale(s, s);
+    ctx.translate(-BASE_W / 2, -BASE_H);
+
+    const hx = BASE_W / 2;
+
+    // Legs
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(hx - 5, BASE_H - 10); ctx.lineTo(hx - 8 + walk, BASE_H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(hx + 5, BASE_H - 10); ctx.lineTo(hx + 8 - walk, BASE_H); ctx.stroke();
+
+    // Body
+    doodleRect(5, 16, BASE_W - 10, 22, p.color);
+
+    // Head
+    doodleCircle(hx, 10, 13, '#ffd54f');
+
+    // Face
+    const ex = hx + p.facing * 2;
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(ex - 3, 7, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(ex + 5, 7, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(ex + 1, 13, 4, 0, Math.PI); ctx.stroke();
+
+    ctx.restore();
+}
+
+function drawHUD() {
+    // Scores
+    ctx.font = 'bold 26px Caveat, cursive';
+    ctx.fillStyle = p1.color; ctx.textAlign = 'left';
+    ctx.fillText(`P1: ${p1.score} 🍬`, 10, 32);
+
+    ctx.fillStyle = timeLeft <= 10 ? '#e03030' : '#333';
+    ctx.font = `bold ${timeLeft <= 10 ? 30 : 26}px Caveat, cursive`;
+    ctx.textAlign = 'center';
+    ctx.fillText(`⏱ ${timeLeft}s`, W / 2, 32);
+
+    ctx.font = 'bold 26px Caveat, cursive';
+    ctx.fillStyle = p2.color; ctx.textAlign = 'right';
+    ctx.fillText(`${p2.score} 🍬 :P2`, W - 10, 32);
+
+    // Size bars (shows how big/slow each player is)
+    const barW = 80, barH = 8;
+    const p1Fill = ((p1.size - 1) / (MAX_SIZE - 1)) * barW;
+    const p2Fill = ((p2.size - 1) / (MAX_SIZE - 1)) * barW;
+
+    doodleRect(10, 40, barW, barH, '#ddd');
+    if (p1Fill > 1) doodleRect(10, 40, p1Fill, barH, p1.color);
+    ctx.font = '13px Caveat, cursive'; ctx.fillStyle = '#555'; ctx.textAlign = 'left';
+    ctx.fillText('size ▲ jump ▼', 10 + barW + 4, 49);
+
+    doodleRect(W - 10 - barW, 40, barW, barH, '#ddd');
+    if (p2Fill > 1) doodleRect(W - 10 - p2Fill, 40, p2Fill, barH, p2.color);
+    ctx.textAlign = 'right';
+    ctx.fillText('jump ▼ size ▲', W - 10 - barW - 4, 49);
+
+    // Controls
+    ctx.font = '14px Caveat, cursive';
+    ctx.fillStyle = p1.color; ctx.textAlign = 'left';
+    ctx.fillText('A / D  move     W  jump', 10, H - 8);
+    ctx.fillStyle = p2.color; ctx.textAlign = 'right';
+    ctx.fillText('← → move     ↑ jump', W - 10, H - 8);
+    ctx.textAlign = 'left';
+}
+
+function drawFloaters() {
+    ctx.font = 'bold 16px Caveat, cursive';
+    ctx.textAlign = 'center';
+    for (const f of floaters) {
+        ctx.globalAlpha = f.alpha;
+        ctx.fillStyle = f.color;
+        ctx.fillText('+1 🍬', f.x, f.y);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+}
+
+function drawOverlay(title, sub) {
+    ctx.fillStyle = 'rgba(255,253,215,0.93)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#111';
+    ctx.font = 'bold 52px Caveat, cursive'; ctx.fillText(title, W / 2, H / 2 - 60);
+    ctx.font = '26px Caveat, cursive';       ctx.fillText(sub,   W / 2, H / 2 - 4);
+    ctx.fillStyle = '#e03030';
+    ctx.font = 'bold 22px Caveat, cursive';
+    ctx.fillText('Press SPACE or ENTER to play again!', W / 2, H / 2 + 55);
+    ctx.textAlign = 'left';
+}
+
+function draw() {
+    drawBG();
+    drawPlatforms();
+    candies.forEach(drawCandy);
+    drawPlayer(p1);
+    drawPlayer(p2);
+    drawFloaters();
+    if (state === 'play' || state === 'over') drawHUD();
+    if (state === 'start') drawOverlay('Candy Grab! 🍬', 'Collect the most candy before time runs out!');
+    if (state === 'over') {
+        if      (p1.score > p2.score) drawOverlay('Blue Wins! 🍬', `Blue: ${p1.score}  vs  Red: ${p2.score}`);
+        else if (p2.score > p1.score) drawOverlay('Red Wins! 🍬',  `Red: ${p2.score}  vs  Blue: ${p1.score}`);
+        else                           drawOverlay("It's a Tie! 🍬", `Both got ${p1.score} candy — so close!`);
+    }
+}
+
+// ── Loop ──────────────────────────────────────────────────────────────────
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+// Show title screen with candy already on the map
+p1 = makePlayer(70,          '#4a90d9', { left: 'a', right: 'd', jump: 'w' });
+p2 = makePlayer(W-70-BASE_W, '#e05252', { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp' });
+candies = []; floaters = []; timeLeft = GAME_TIME;
+for (let i = 0; i < 8; i++) spawnCandy();
+state = 'start';
+loop();
+</script>
+</body>
+</html>
