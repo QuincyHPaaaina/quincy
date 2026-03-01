@@ -12,11 +12,13 @@ Most of the Python games use a library called **pygame**. You only need to insta
 2. Open a terminal: **Terminal → New Terminal**
 3. Run this command:
    ```bash
-   pip install pygame
+   pip install pygame-ce
    ```
-4. Wait for it to finish. You should see: `Successfully installed pygame-...`
+4. Wait for it to finish. You should see: `Successfully installed pygame-ce-...`
 
 That's it! You won't need to do this again.
+
+> **Note:** Use `pygame-ce` (not `pygame`) — it's the version that works with Python 3.14.
 
 ---
 
@@ -43,7 +45,11 @@ These games need Python to run:
 ### Option B: Run from the Terminal
 
 1. Open a terminal in VS Code: **Terminal → New Terminal**
-2. Type this command (swap the filename for the game you want):
+2. First, navigate to your quincy folder:
+   ```bash
+   cd c:/Users/Quincy/source/repos/quincy
+   ```
+3. Then run the game you want:
    ```bash
    python projects/flappy_bird.py
    ```
@@ -55,6 +61,8 @@ These games need Python to run:
    python projects/pi_quiz.py
    python projects/bald_with_hair.py
    ```
+
+> **Tip:** You need to run the `cd` command every time you open a new terminal.
 
 ### Option C: Double-Click from File Explorer
 
@@ -88,7 +96,13 @@ These games run in your web browser — no Python needed:
 ## Troubleshooting
 
 **"No module named pygame"**
-→ Run `pip install pygame` in the terminal and try again.
+→ Run `pip install pygame-ce` in the terminal and try again.
+
+**"can't open file" or "No such file or directory"**
+→ You're not in the right folder. Run this first, then try again:
+```bash
+cd c:/Users/Quincy/source/repos/quincy
+```
 
 **The game window opens but closes right away**
 → Run the game from the terminal instead of double-clicking, so you can see any error messages.
