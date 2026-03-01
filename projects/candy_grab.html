@@ -17,7 +17,7 @@
     </style>
 </head>
 <body>
-<canvas id="game" width="650" height="450"></canvas>
+<canvas id="game" width="820" height="480"></canvas>
 <script>
 const canvas = document.getElementById('game');
 const ctx    = canvas.getContext('2d');
@@ -37,13 +37,17 @@ const CANDY_SHAPES = ['circle','star','diamond','heart'];
 
 // Platforms [x, y, width]
 const PLATS = [
-    [0,   GND, W  ],   // ground
-    [215, 315, 220],   // middle
-    [50,  370, 120],   // left low
-    [480, 370, 120],   // right low
-    [80,  248, 110],   // left high
-    [460, 248, 110],   // right high
-    [270, 180, 110],   // top center
+    [0,   GND, W  ],   // ground (full width)
+    [60,  385, 130],   // left low
+    [630, 385, 130],   // right low
+    [300, 370, 220],   // center low
+    [40,  305, 120],   // left mid
+    [660, 305, 120],   // right mid
+    [200, 290, 140],   // left-center mid
+    [480, 290, 140],   // right-center mid
+    [100, 215, 110],   // left high
+    [610, 215, 110],   // right high
+    [330, 150, 160],   // top center
 ];
 
 // ── Input ─────────────────────────────────────────────────────────────────
@@ -112,12 +116,12 @@ function makePlayer(x, color, ctrl) {
 
 function init() {
     clearInterval(timerHandle);
-    p1 = makePlayer(70,          '#4a90d9', { left: 'a', right: 'd', jump: 'w' });
-    p2 = makePlayer(W-70-BASE_W, '#e05252', { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp' });
+    p1 = makePlayer(100,         '#4a90d9', { left: 'a', right: 'd', jump: 'w' });
+    p2 = makePlayer(W-100-BASE_W,'#e05252', { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp' });
     candies  = [];
     floaters = [];
     timeLeft = GAME_TIME;
-    for (let i = 0; i < 8; i++) spawnCandy();
+    for (let i = 0; i < 12; i++) spawnCandy();
     state = 'play';
     timerHandle = setInterval(() => {
         if (state !== 'play') { clearInterval(timerHandle); return; }
@@ -385,10 +389,10 @@ function draw() {
 function loop() { update(); draw(); requestAnimationFrame(loop); }
 
 // Show title screen with candy already on the map
-p1 = makePlayer(70,          '#4a90d9', { left: 'a', right: 'd', jump: 'w' });
-p2 = makePlayer(W-70-BASE_W, '#e05252', { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp' });
+p1 = makePlayer(100,          '#4a90d9', { left: 'a', right: 'd', jump: 'w' });
+p2 = makePlayer(W-100-BASE_W, '#e05252', { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp' });
 candies = []; floaters = []; timeLeft = GAME_TIME;
-for (let i = 0; i < 8; i++) spawnCandy();
+for (let i = 0; i < 12; i++) spawnCandy();
 state = 'start';
 loop();
 </script>
