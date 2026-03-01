@@ -1,0 +1,13 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Highscore / save files
+*_highscore.txt
+highscore.txt
+
+# OS files
+.DS_Store
+Thumbs.db

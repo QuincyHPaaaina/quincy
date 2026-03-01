@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bow Battle!</title>
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #c9e4f7;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: 'Caveat', cursive;
+        }
+        canvas { border: 4px solid #222; display: block; }
+    </style>
+</head>
+<body>
+    <canvas id="game" width="600" height="430"></canvas>
+    <script>
+    const canvas = document.getElementById('game');
+    const ctx    = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    const GRAV    = 0.45;
+    const JUMP_F  = -13;
+    const SPD     = 3.8;
+    const ARR_SPD = 11;
+    const GND     = H - 55;   // world y of ground surface
+    const PW = 28, PH = 46;   // player size
+
+    // Platforms: [x, y, width]
+    const PLATS = [
+        [0,   GND,  W  ],   // ground
+        [210, 295,  180],   // middle
+        [40,  358,  120],   // left
+        [440, 358,  120],   // right
+    ];
+
+    // ── Input ─────────────────────────────────────────────────────────────────
+    const keys = {};
+    window.addEventListener('keydown', e => {
+        keys[e.key] = true;
+        if ([' ','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
+        if ((e.code === 'Space' || e.key === 'Enter') && state !== 'play') init();
+        if (state === 'play' && p1) {
+            if (e.code === 'ShiftLeft')  p1.weapon = p1.weapon === 'bow' ? 'sword' : 'bow';
+            if (e.code === 'ShiftRight') p2.weapon = p2.weapon === 'bow' ? 'sword' : 'bow';
+        }
+    });
+    window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+    // ── Doodle helpers ────────────────────────────────────────────────────────
+    function j(a = 3) { return (Math.random() - 0.5) * a * 2; }
+
+    function doodleRect(x, y, w, h, fill) {
+        ctx.fillStyle = fill;
+        ctx.beginPath();
+        ctx.moveTo(x+j(.3),   y+j(.3));   ctx.lineTo(x+w+j(.3), y+j(.3));
+        ctx.lineTo(x+w+j(.3), y+h+j(.3)); ctx.lineTo(x+j(.3),   y+h+j(.3));
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 2.5; ctx.lineCap = ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x+j(1.5), y+j(1.5));
+        ctx.bezierCurveTo(x+w*.35+j(2), y+j(2.5),     x+w*.65+j(2), y+j(2.5),     x+w+j(1.5), y+j(1.5));
+        ctx.bezierCurveTo(x+w+j(2.5),   y+h*.35+j(2), x+w+j(2.5),   y+h*.65+j(2), x+w+j(1.5), y+h+j(1.5));
+        ctx.bezierCurveTo(x+w*.65+j(2), y+h+j(2.5),   x+w*.35+j(2), y+h+j(2.5),   x+j(1.5),   y+h+j(1.5));
+        ctx.bezierCurveTo(x+j(2.5),     y+h*.65+j(2), x+j(2.5),     y+h*.35+j(2), x+j(1.5),   y+j(1.5));
+        ctx.stroke();
+    }
+
+    function doodleCircle(cx, cy, r, fill) {
+        const k = r * 0.55;
+        ctx.fillStyle = fill;
+        ctx.beginPath();
+        ctx.moveTo(cx+j(.8), cy-r+j(.8));
+        ctx.bezierCurveTo(cx+k+j(2), cy-r+j(1.2), cx+r+j(1.2), cy-k+j(2), cx+r+j(.8), cy+j(.8));
+        ctx.bezierCurveTo(cx+r+j(1.2), cy+k+j(2), cx+k+j(2), cy+r+j(1.2), cx+j(.8),   cy+r+j(.8));
+        ctx.bezierCurveTo(cx-k+j(2), cy+r+j(1.2), cx-r+j(1.2), cy+k+j(2), cx-r+j(.8), cy+j(.8));
+        ctx.bezierCurveTo(cx-r+j(1.2), cy-k+j(2), cx-k+j(2), cy-r+j(1.2), cx+j(.8),   cy-r+j(.8));
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 2.5; ctx.lineCap = ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx+j(1.5), cy-r+j(1.5));
+        ctx.bezierCurveTo(cx+k+j(3), cy-r+j(2), cx+r+j(2), cy-k+j(3), cx+r+j(1.5), cy+j(1.5));
+        ctx.bezierCurveTo(cx+r+j(2), cy+k+j(3), cx+k+j(3), cy+r+j(2), cx+j(1.5),   cy+r+j(1.5));
+        ctx.bezierCurveTo(cx-k+j(3), cy+r+j(2), cx-r+j(2), cy+k+j(3), cx-r+j(1.5), cy+j(1.5));
+        ctx.bezierCurveTo(cx-r+j(2), cy-k+j(3), cx-k+j(3), cy-r+j(2), cx+j(1.5),   cy-r+j(1.5));
+        ctx.closePath(); ctx.stroke();
+    }
+
+    // ── Game state ────────────────────────────────────────────────────────────
+    let p1, p2, arrows, ragdolls, state, winner, resetTimer;
+
+    function makePlayer(x, color, facing, ctrl) {
+        return {
+            x, y: GND - PH, vx: 0, vy: 0,
+            onGround: false, facing,
+            angle: 35,      // aim: 0=horizontal 90=straight up
+            color, ctrl,
+            lives: 3, hp: 3, dead: false, crouching: false,
+            cooldown: 90,   // prevent shooting immediately on start
+            weapon: 'bow',  // 'bow' or 'sword'
+            slashing: 0,    // frames remaining in sword swing animation
+        };
+    }
+
+    function init() {
+        p1 = makePlayer(55, '#4a90d9', 1, {
+            left: 'a', right: 'd', jump: 'w',
+            aimUp: 'q', aimDown: 'e', shoot: ' ', crouch: 's'
+        });
+        p2 = makePlayer(W - 55 - PW, '#e05252', -1, {
+            left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp',
+            aimUp: 'i', aimDown: 'k', shoot: 'Enter', crouch: 'ArrowDown'
+        });
+        arrows = []; ragdolls = [];
+        state = 'play'; winner = null; resetTimer = 0;
+    }
+
+    // ── Physics ───────────────────────────────────────────────────────────────
+    function landOn(ent, w, h) {
+        ent.onGround = false;
+        for (const [px, py, pw] of PLATS) {
+            const bot     = ent.y + h;
+            const prevBot = bot - ent.vy;
+            if (ent.x + w > px && ent.x < px + pw && bot >= py && prevBot <= py + 6) {
+                ent.y = py - h; ent.vy = 0; ent.onGround = true;
+            }
+        }
+    }
+
+    function tickPlayer(p) {
+        if (p.dead) return;
+        if      (keys[p.ctrl.left])  { p.vx = -SPD; p.facing = -1; }
+        else if (keys[p.ctrl.right]) { p.vx =  SPD; p.facing =  1; }
+        else                           p.vx *= 0.75;
+
+        if (keys[p.ctrl.jump] && p.onGround) p.vy = JUMP_F;
+        p.crouching = !!keys[p.ctrl.crouch];
+
+        // Bow-only: aim angle
+        if (p.weapon === 'bow') {
+            if (keys[p.ctrl.aimUp])   p.angle = Math.min(85, p.angle + 1.8);
+            if (keys[p.ctrl.aimDown]) p.angle = Math.max(2,  p.angle - 1.8);
+        }
+
+        if (p.cooldown > 0) {
+            p.cooldown--;
+        } else if (keys[p.ctrl.shoot] && !p.crouching) {
+            if (p.weapon === 'bow') {
+                const rad = p.angle * Math.PI / 180;
+                arrows.push({
+                    x: p.x + PW/2 + p.facing * 20,
+                    y: p.y + PH/3,
+                    vx: Math.cos(rad) * ARR_SPD * p.facing,
+                    vy: -Math.sin(rad) * ARR_SPD,
+                    owner: p
+                });
+                p.cooldown = 35;
+            } else {
+                // Sword slash — check hit immediately
+                p.slashing  = 20;
+                p.cooldown  = 28;
+                const victim = p === p1 ? p2 : p1;
+                if (!victim.dead) {
+                    const dx      = victim.x + PW/2 - (p.x + PW/2);
+                    const inFront = p.facing === 1 ? dx > 0 : dx < 0;
+                    if (inFront && Math.abs(dx) < 72 && Math.abs(victim.y - p.y) < PH + 10) {
+                        if (!victim.crouching) hitPlayer(p, victim, p.facing * 7, -4);
+                    }
+                }
+            }
+        }
+
+        if (p.slashing > 0) p.slashing--;
+
+        p.vy += GRAV;
+        p.x = Math.max(0, Math.min(W - PW, p.x + p.vx));
+        p.y += p.vy;
+        landOn(p, PW, PH);
+    }
+
+    function tickArrows() {
+        for (let i = arrows.length - 1; i >= 0; i--) {
+            const a = arrows[i];
+            a.vy += GRAV * 0.55;
+            a.x  += a.vx;
+            a.y  += a.vy;
+            if (a.y > GND + 20) { arrows.splice(i, 1); continue; }
+
+            const tgt = a.owner === p1 ? p2 : p1;
+            const hitTop = tgt.crouching ? tgt.y + PH / 2 : tgt.y + 3;
+            if (!tgt.dead &&
+                a.x > tgt.x + 3 && a.x < tgt.x + PW - 3 &&
+                a.y > hitTop && a.y < tgt.y + PH - 3) {
+                if (tgt.crouching) {
+                    // Deflect arrow back!
+                    a.vx *= -1.1;
+                    a.vy -= 1;
+                    a.x  += a.vx * 4;
+                    a.owner = tgt;
+                } else {
+                    arrows.splice(i, 1);
+                    hitPlayer(a.owner, tgt, a.vx, a.vy);
+                }
+            }
+        }
+    }
+
+    // Shared hit handler — 3 hits drain one heart, then reset
+    function hitPlayer(attacker, victim, hvx, hvy) {
+        victim.hp--;
+        if (victim.hp <= 0) { victim.lives--; victim.hp = 3; }
+        spawnRagdoll(victim, hvx, hvy);
+        victim.dead = true;
+        if (victim.lives <= 0) { winner = attacker; state = 'over'; }
+        else                    resetTimer = 160;
+    }
+
+    function spawnRagdoll(p, hvx, hvy) {
+        const cx = p.x + PW/2, cy = p.y + PH/2, c = p.color;
+        for (const [x, y, vx, vy, r, type] of [
+            [cx,    cy-22, hvx*.5+j(3),   hvy*.8-8,     13, 'head'],
+            [cx,    cy,    hvx*.4+j(2),   hvy*.4-3,     10, 'body'],
+            [cx-14, cy-10, hvx*.5-3+j(4), hvy*.5-4+j(2), 7, 'limb'],
+            [cx+14, cy-10, hvx*.5+3+j(4), hvy*.5-4+j(2), 7, 'limb'],
+            [cx-8,  cy+14, hvx*.3-2+j(3), j(3),          6, 'limb'],
+            [cx+8,  cy+14, hvx*.3+2+j(3), j(3),          6, 'limb'],
+        ]) {
+            ragdolls.push({ x, y, vx, vy, r, type, col: c, rot: j(0.2), rotV: j(0.3) });
+        }
+    }
+
+    function tickRagdolls() {
+        for (const r of ragdolls) {
+            r.vy += GRAV * 0.9;
+            r.x += r.vx; r.y += r.vy;
+            r.rot += r.rotV; r.rotV *= 0.97; r.vx *= 0.97;
+            if (r.y > GND - r.r) { r.y = GND - r.r; r.vy *= -0.32; r.vx *= 0.72; r.rotV *= 0.6; }
+        }
+        if (resetTimer > 0 && state === 'play') {
+            if (--resetTimer <= 0) {
+                ragdolls = [];
+                for (const p of [p1, p2]) {
+                    if (p.dead) {
+                        p.x = p === p1 ? 55 : W - 55 - PW;
+                        p.y = GND - PH; p.vx = 0; p.vy = 0;
+                        p.dead = false; p.cooldown = 70;
+                    }
+                }
+            }
+        }
+    }
+
+    function update() {
+        if (state !== 'play') return;
+        tickPlayer(p1); tickPlayer(p2);
+        tickArrows(); tickRagdolls();
+    }
+
+    // ── Drawing ───────────────────────────────────────────────────────────────
+    function drawBG() {
+        ctx.fillStyle = '#fffef2';
+        ctx.fillRect(0, 0, W, H);
+        ctx.strokeStyle = 'rgba(150,195,255,0.5)'; ctx.lineWidth = 1;
+        for (let y = 28; y < H; y += 28) {
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+        }
+        ctx.strokeStyle = 'rgba(255,130,130,0.4)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(36, 0); ctx.lineTo(36, H); ctx.stroke();
+    }
+
+    function drawPlatforms() {
+        for (const [px, py, pw] of PLATS) {
+            const ph = px === 0 ? H - py : 12;
+            doodleRect(px, py, pw, ph, '#7cb87c');
+        }
+    }
+
+    // Draw bow (C-curve) + arrow, rotated to aim angle, facing direction
+    function drawBow(ox, oy, facing, angle, color) {
+        ctx.save();
+        ctx.translate(ox, oy);
+        ctx.scale(facing, 1);
+        ctx.rotate(-angle * Math.PI / 180);
+
+        // Bow limb — quadratic C-curve opening to the right
+        ctx.strokeStyle = color; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(2, -17 + j(1));
+        ctx.quadraticCurveTo(-17 + j(1), 0, 2, 17 + j(1));
+        ctx.stroke();
+
+        // String
+        ctx.strokeStyle = '#444'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(2, -17); ctx.lineTo(2, 17); ctx.stroke();
+
+        // Shaft (tip points right = toward target after scale)
+        ctx.strokeStyle = '#7a5230'; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(20, 0); ctx.stroke();
+
+        // Metal tip
+        ctx.fillStyle = '#bbb';
+        ctx.beginPath(); ctx.moveTo(20, 0); ctx.lineTo(14, -3.5); ctx.lineTo(14, 3.5); ctx.closePath(); ctx.fill();
+
+        // Feathers
+        ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(-16, -5); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(-16,  5); ctx.stroke();
+        ctx.restore();
+    }
+
+    // Draw sword — sweeps from raised (up) to lowered (down) during slash
+    function drawSword(ox, oy, facing, slashProg, color) {
+        // slashProg 1→0 over the swing; 0 = resting
+        const angle = slashProg > 0
+            ? -1.1 + (1 - slashProg) * 1.9   // sweeps up → down
+            : -0.25;                           // resting position
+        ctx.save();
+        ctx.translate(ox, oy);
+        ctx.scale(facing, 1);
+        ctx.rotate(angle);
+
+        // Handle (brown grip)
+        doodleRect(-4, -5, 16, 10, '#8b4513');
+        // Crossguard
+        doodleRect(11, -10, 5, 20, '#999');
+        // Blade
+        ctx.fillStyle = '#ddd';
+        ctx.strokeStyle = '#444'; ctx.lineWidth = 2; ctx.lineCap = ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(16+j(.5), -3.5+j(.5));
+        ctx.lineTo(54+j(1),  -1.5+j(.5));
+        ctx.lineTo(58+j(.5),    j(.5));
+        ctx.lineTo(54+j(1),   1.5+j(.5));
+        ctx.lineTo(16+j(.5),  3.5+j(.5));
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        // Shine
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(18, -1.5); ctx.lineTo(52, -0.5); ctx.stroke();
+
+        // Slash whoosh arc while swinging
+        if (slashProg > 0) {
+            ctx.strokeStyle = `rgba(180, 220, 255, ${slashProg * 0.45})`;
+            ctx.lineWidth = 10; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.arc(0, 0, 56, -1.1, -1.1 + (1 - slashProg) * 1.9); ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    // Dashed arc preview of where the arrow will land
+    function drawAimArc(p) {
+        if (p.dead) return;
+        const rad = p.angle * Math.PI / 180;
+        let x  = p.x + PW/2 + p.facing * 24;
+        let y  = p.y + PH/3;
+        let vx = Math.cos(rad) * ARR_SPD * p.facing;
+        let vy = -Math.sin(rad) * ARR_SPD;
+        ctx.setLineDash([4, 7]);
+        ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(x, y);
+        for (let i = 0; i < 65; i++) {
+            vy += GRAV * 0.55; x += vx; y += vy;
+            if (y > GND) break;
+            ctx.lineTo(x, y);
+        }
+        ctx.stroke(); ctx.setLineDash([]);
+    }
+
+    function drawPlayer(p) {
+        if (p.dead) return;
+        const cx   = p.x + PW/2;
+        const walk = Math.abs(p.vx) > 0.5 ? Math.sin(Date.now() / 95) * 6 : 0;
+
+        // Aim arc — drawn before squish so it isn't distorted
+        if (p.weapon === 'bow' && !p.crouching) drawAimArc(p);
+
+        // Squish the whole character down to half-height when crouching
+        // (anchor at feet so they stay on the ground)
+        if (p.crouching) {
+            ctx.save();
+            ctx.translate(0, p.y + PH);
+            ctx.scale(1, 0.5);
+            ctx.translate(0, -(p.y + PH));
+        }
+
+        // Legs
+        ctx.strokeStyle = '#333'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(cx - 5, p.y + PH - 10); ctx.lineTo(cx - 8 + walk, p.y + PH + j(1)); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx + 5, p.y + PH - 10); ctx.lineTo(cx + 8 - walk, p.y + PH + j(1)); ctx.stroke();
+
+        // Body
+        doodleRect(p.x + 5, p.y + 16, PW - 10, 22, p.color);
+
+        // Weapon arm
+        const wx = cx + p.facing * 14, wy = p.y + PH/3;
+        if (p.weapon === 'bow') drawBow(wx, wy, p.facing, p.angle, p.color);
+        else                    drawSword(wx, wy, p.facing, p.slashing / 20, p.color);
+
+        // Weapon badge
+        ctx.font = 'bold 13px Caveat, cursive';
+        ctx.fillStyle = '#333'; ctx.textAlign = 'center';
+        ctx.fillText(p.weapon === 'bow' ? '🏹' : '⚔️', cx, p.y - 4);
+        ctx.textAlign = 'left';
+
+        // Head
+        doodleCircle(cx, p.y + 10, 13, '#ffd54f');
+
+        // Face — determined flat mouth when blocking
+        const ex = cx + p.facing * 2;
+        ctx.fillStyle = '#111';
+        ctx.beginPath(); ctx.arc(ex - 3, p.y + 7, 2.5, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(ex + 5, p.y + 7, 2.5, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+        ctx.beginPath();
+        if (p.crouching) { ctx.moveTo(ex - 4, p.y + 14); ctx.lineTo(ex + 6, p.y + 14); }
+        else              { ctx.arc(ex + 1, p.y + 13, 4, 0, Math.PI); }
+        ctx.stroke();
+
+        if (p.crouching) {
+            ctx.restore();
+            drawShield(p);  // shield drawn outside squish transform at full size
+        }
+    }
+
+    function drawShield(p) {
+        const sx = p.x + PW/2 + p.facing * 26;
+        const sy = p.y + PH - 16;
+
+        // Soft glow aura
+        ctx.fillStyle = 'rgba(100, 200, 255, 0.12)';
+        ctx.beginPath(); ctx.arc(sx, sy, 24 + j(2), 0, Math.PI * 2); ctx.fill();
+
+        // Shield body
+        doodleCircle(sx, sy, 15, 15, p.color);
+
+        // Center boss knob
+        doodleCircle(sx + j(0.5), sy + j(0.5), 5, 5, 'white');
+
+        // Animated pulsing ring
+        const pulse = 0.5 + Math.sin(Date.now() / 90) * 0.3;
+        ctx.strokeStyle = `rgba(120, 210, 255, ${pulse})`;
+        ctx.lineWidth = 3; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.arc(sx + j(1), sy + j(1), 20, 0, Math.PI * 2); ctx.stroke();
+
+        // "BLOCK!" label
+        ctx.fillStyle = '#111';
+        ctx.font = 'bold 12px Caveat, cursive';
+        ctx.textAlign = 'center';
+        ctx.fillText('BLOCK!', sx + j(1), sy - 26 + j(1));
+        ctx.textAlign = 'left';
+    }
+
+    function drawArrow(a) {
+        ctx.save();
+        ctx.translate(a.x, a.y);
+        ctx.rotate(Math.atan2(a.vy, a.vx));
+        ctx.strokeStyle = '#7a5230'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(10, 0); ctx.stroke();
+        ctx.fillStyle = '#bbb';
+        ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(5, -3.5); ctx.lineTo(5, 3.5); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = '#e05252'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(-18, -4); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(-18,  4); ctx.stroke();
+        ctx.restore();
+    }
+
+    function drawRagdolls() {
+        for (const r of ragdolls) {
+            ctx.save();
+            ctx.translate(r.x, r.y);
+            ctx.rotate(r.rot);
+            if (r.type === 'head') doodleCircle(0, 0, r.r, '#ffd54f');
+            else                    doodleRect(-r.r, -r.r * 1.2, r.r * 2, r.r * 2.4, r.col);
+            ctx.restore();
+        }
+    }
+
+    function drawHUD() {
+        // P1 hearts + hp dots
+        ctx.font = 'bold 22px Caveat, cursive';
+        ctx.fillStyle = p1.color; ctx.textAlign = 'left';
+        ctx.fillText('P1:', 10, 28);
+        for (let i = 0; i < 3; i++) {
+            ctx.fillStyle = i < p1.lives ? '#e03030' : '#ccc';
+            ctx.fillText('♥', 46 + i * 26, 28);
+        }
+        // hp dots below p1 hearts (shows damage on current heart)
+        ctx.font = '18px Caveat, cursive';
+        for (let i = 0; i < 3; i++) {
+            ctx.fillStyle = i < p1.hp ? '#e03030' : '#ddd';
+            ctx.fillText('•', 50 + i * 12, 44);
+        }
+
+        // P2 hearts + hp dots
+        ctx.font = 'bold 22px Caveat, cursive';
+        ctx.fillStyle = p2.color; ctx.textAlign = 'right';
+        ctx.fillText(':P2', W - 10, 28);
+        for (let i = 0; i < 3; i++) {
+            ctx.fillStyle = (2 - i) < p2.lives ? '#e03030' : '#ccc';
+            ctx.fillText('♥', W - 46 - i * 26, 28);
+        }
+        // hp dots below p2 hearts
+        ctx.font = '18px Caveat, cursive';
+        for (let i = 0; i < 3; i++) {
+            ctx.fillStyle = i < p2.hp ? '#e03030' : '#ddd';
+            ctx.fillText('•', W - 50 - i * 12, 44);
+        }
+        // Controls reminder
+        ctx.font = '14px Caveat, cursive';
+        ctx.fillStyle = p1.color; ctx.textAlign = 'left';
+        ctx.fillText('WASD  Q/E=aim  SPACE=shoot  S=block  LShift=swap', 10, H - 8);
+        ctx.fillStyle = p2.color; ctx.textAlign = 'right';
+        ctx.fillText('RShift=swap  ↓=block  ENTER=shoot  I/K=aim  Arrows', W - 10, H - 8);
+        ctx.textAlign = 'left';
+    }
+
+    function drawOverlay(title, sub) {
+        ctx.fillStyle = 'rgba(255,253,215,0.92)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#111';
+        ctx.font = 'bold 54px Caveat, cursive'; ctx.fillText(title, W/2, H/2 - 60);
+        ctx.font = '26px Caveat, cursive';       ctx.fillText(sub,   W/2, H/2 - 4);
+        ctx.fillStyle = '#e03030';
+        ctx.font = 'bold 24px Caveat, cursive';
+        ctx.fillText('Press SPACE or ENTER to play!', W/2, H/2 + 55);
+        ctx.textAlign = 'left';
+    }
+
+    function draw() {
+        drawBG();
+        drawPlatforms();
+        drawRagdolls();
+        arrows.forEach(drawArrow);
+        drawPlayer(p1);
+        drawPlayer(p2);
+        drawHUD();
+        if (state === 'start') drawOverlay('Bow Battle!', 'Arrows or get close and use a sword!');
+        if (state === 'over' && winner) {
+            const who  = winner === p1 ? 'Blue' : 'Red';
+            const lost = winner === p1 ? 'Red'  : 'Blue';
+            drawOverlay(who + ' Wins!', lost + ' ran out of hearts!');
+        }
+    }
+
+    // ── Loop ──────────────────────────────────────────────────────────────────
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+    init();
+    state = 'start';
+    loop();
+    </script>
+</body>
+</html>
