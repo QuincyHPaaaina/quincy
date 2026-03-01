@@ -44,10 +44,15 @@
     window.addEventListener('keydown', e => {
         keys[e.key] = true;
         if ([' ','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
-        if ((e.code === 'Space' || e.key === 'Enter') && state !== 'play') init();
+        if (state === 'menu') {
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') menuSelection = 1 - menuSelection;
+            if (e.code === 'Space' || e.key === 'Enter') { botMode = menuSelection === 0; init(); }
+        } else if ((e.code === 'Space' || e.key === 'Enter') && state === 'over') {
+            state = 'menu';
+        }
         if (state === 'play' && p1) {
             if (e.code === 'ShiftLeft')  p1.weapon = p1.weapon === 'bow' ? 'sword' : 'bow';
-            if (e.code === 'ShiftRight') p2.weapon = p2.weapon === 'bow' ? 'sword' : 'bow';
+            if (!botMode && e.code === 'ShiftRight') p2.weapon = p2.weapon === 'bow' ? 'sword' : 'bow';
         }
     });
     window.addEventListener('keyup', e => { keys[e.key] = false; });
@@ -93,6 +98,7 @@
 
     // ── Game state ────────────────────────────────────────────────────────────
     let p1, p2, arrows, ragdolls, state, winner, resetTimer;
+    let botMode = false, menuSelection = 0, botJumpCooldown = 0;
 
     function makePlayer(x, color, facing, ctrl) {
         return {
@@ -210,6 +216,115 @@
         }
     }
 
+    // ── Bot AI ────────────────────────────────────────────────────────────────
+    // Simulate arrow trajectory to find the best aim angle to hit a target
+    function calcAimAngle(bot, target) {
+        const sx = bot.x + PW/2 + bot.facing * 20;
+        const sy = bot.y + PH/3;
+        const tx = target.x + PW/2;
+        const ty = target.y + PH/2;
+        let bestAngle = null, bestDist = Infinity;
+        for (let a = 5; a <= 80; a += 2) {
+            const rad = a * Math.PI / 180;
+            let x = sx, y = sy;
+            let vx = Math.cos(rad) * ARR_SPD * bot.facing;
+            let vy = -Math.sin(rad) * ARR_SPD;
+            for (let t = 0; t < 100; t++) {
+                vy += GRAV * 0.55; x += vx; y += vy;
+                if (y > GND) break;
+                const d = Math.hypot(x - tx, y - ty);
+                if (d < bestDist) { bestDist = d; bestAngle = a; }
+            }
+        }
+        return bestDist < 55 ? bestAngle : null;
+    }
+
+    function tickBot(bot, target) {
+        if (bot.dead) return;
+        const dx   = (target.x + PW/2) - (bot.x + PW/2);
+        const dy   = target.y - bot.y;
+        const dist = Math.abs(dx);
+
+        // Always face the target
+        if (Math.abs(dx) > 4) bot.facing = Math.sign(dx);
+
+        // Weapon: sword up close, bow at range
+        if (dist < 90  && bot.weapon === 'bow')   bot.weapon = 'sword';
+        if (dist > 150 && bot.weapon === 'sword')  bot.weapon = 'bow';
+
+        // Movement
+        if (bot.weapon === 'sword') {
+            bot.vx = Math.sign(dx) * SPD;              // rush the player
+        } else {
+            if      (dist < 130) bot.vx = -Math.sign(dx) * SPD * 0.8; // too close, back off
+            else if (dist > 280) bot.vx =  Math.sign(dx) * SPD;       // too far, move in
+            else                 bot.vx *= 0.75;                       // comfortable range
+        }
+        bot.x = Math.max(0, Math.min(W - PW, bot.x + bot.vx));
+
+        // Jump to reach a higher platform, or small random hops
+        if (botJumpCooldown > 0) botJumpCooldown--;
+        if (bot.onGround && botJumpCooldown <= 0) {
+            if (dy < -55)               { bot.vy = JUMP_F; botJumpCooldown = 50; }
+            else if (Math.random() < 0.006) { bot.vy = JUMP_F; botJumpCooldown = 70; }
+        }
+
+        // Detect arrows heading toward the bot and decide once whether to dodge
+        const botCX = bot.x + PW/2;
+        const incoming = arrows.some(a =>
+            a.owner !== bot &&
+            Math.sign(a.vx) === Math.sign(botCX - a.x) &&
+            Math.abs(botCX - a.x) < 200 &&
+            Math.abs(a.y - (bot.y + PH/2)) < PH * 1.3
+        );
+        if (!bot._prevIncoming && incoming) bot._willDodge = Math.random() < 0.60;
+        if (!incoming) bot._willDodge = false;
+        bot._prevIncoming = incoming;
+        bot.crouching = incoming && !!bot._willDodge;
+
+        // Aim and shoot
+        if (bot.cooldown > 0) {
+            bot.cooldown--;
+        } else if (!bot.crouching) {
+            if (bot.weapon === 'bow') {
+                const targetAngle = calcAimAngle(bot, target);
+                if (targetAngle !== null) {
+                    // Gradually adjust aim toward the correct angle
+                    if      (bot.angle < targetAngle - 1) bot.angle = Math.min(85, bot.angle + 3);
+                    else if (bot.angle > targetAngle + 1) bot.angle = Math.max(2, bot.angle - 3);
+                    // Fire when aim is close enough, with a small random wobble
+                    if (Math.abs(bot.angle - targetAngle) < 5) {
+                        const noise = (Math.random() - 0.5) * 8;
+                        const rad = (bot.angle + noise) * Math.PI / 180;
+                        arrows.push({
+                            x: bot.x + PW/2 + bot.facing * 20,
+                            y: bot.y + PH/3,
+                            vx: Math.cos(rad) * ARR_SPD * bot.facing,
+                            vy: -Math.sin(rad) * ARR_SPD,
+                            owner: bot
+                        });
+                        bot.cooldown = 48;  // slightly slower than player (35) to keep it fair
+                    }
+                }
+            } else {
+                // Sword: slash when in melee range
+                if (dist < 72 && Math.abs(dy) < PH + 10) {
+                    bot.slashing = 20;
+                    bot.cooldown = 32;
+                    const inFront = bot.facing === 1 ? dx > 0 : dx < 0;
+                    if (!target.dead && inFront && !target.crouching)
+                        hitPlayer(bot, target, bot.facing * 7, -4);
+                }
+            }
+        }
+        if (bot.slashing > 0) bot.slashing--;
+
+        // Physics
+        bot.vy += GRAV;
+        bot.y  += bot.vy;
+        landOn(bot, PW, PH);
+    }
+
     // Shared hit handler — 3 hits drain one heart, then reset
     function hitPlayer(attacker, victim, hvx, hvy) {
         victim.hp--;
@@ -257,7 +372,9 @@
 
     function update() {
         if (state !== 'play') return;
-        tickPlayer(p1); tickPlayer(p2);
+        tickPlayer(p1);
+        if (botMode) tickBot(p2, p1);
+        else tickPlayer(p2);
         tickArrows(); tickRagdolls();
     }
 
@@ -499,7 +616,7 @@
         // P2 hearts + hp dots
         ctx.font = 'bold 22px Caveat, cursive';
         ctx.fillStyle = p2.color; ctx.textAlign = 'right';
-        ctx.fillText(':P2', W - 10, 28);
+        ctx.fillText(botMode ? ':BOT' : ':P2', W - 10, 28);
         for (let i = 0; i < 3; i++) {
             ctx.fillStyle = (2 - i) < p2.lives ? '#e03030' : '#ccc';
             ctx.fillText('♥', W - 46 - i * 26, 28);
@@ -514,8 +631,10 @@
         ctx.font = '14px Caveat, cursive';
         ctx.fillStyle = p1.color; ctx.textAlign = 'left';
         ctx.fillText('WASD  Q/E=aim  SPACE=shoot  S=block  LShift=swap', 10, H - 8);
-        ctx.fillStyle = p2.color; ctx.textAlign = 'right';
-        ctx.fillText('RShift=swap  ↓=block  ENTER=shoot  I/K=aim  Arrows', W - 10, H - 8);
+        if (!botMode) {
+            ctx.fillStyle = p2.color; ctx.textAlign = 'right';
+            ctx.fillText('RShift=swap  ↓=block  ENTER=shoot  I/K=aim  Arrows', W - 10, H - 8);
+        }
         ctx.textAlign = 'left';
     }
 
@@ -528,31 +647,60 @@
         ctx.font = '26px Caveat, cursive';       ctx.fillText(sub,   W/2, H/2 - 4);
         ctx.fillStyle = '#e03030';
         ctx.font = 'bold 24px Caveat, cursive';
-        ctx.fillText('Press SPACE or ENTER to play!', W/2, H/2 + 55);
+        ctx.fillText('Press SPACE or ENTER for Menu', W/2, H/2 + 55);
+        ctx.textAlign = 'left';
+    }
+
+    function drawMenu() {
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#111';
+        ctx.font = 'bold 58px Caveat, cursive';
+        ctx.fillText('Bow Battle!', W/2, 115);
+        ctx.font = '22px Caveat, cursive';
+        ctx.fillStyle = '#555';
+        ctx.fillText('Choose your mode:', W/2, 160);
+
+        const opts = ['1 Player  (vs Bot)', '2 Players'];
+        opts.forEach((label, i) => {
+            const y = 228 + i * 78;
+            const sel = menuSelection === i;
+            doodleRect(W/2 - 148, y - 34, 296, 54, sel ? '#4a90d9' : '#e8f0ff');
+            ctx.font = `bold ${sel ? 27 : 23}px Caveat, cursive`;
+            ctx.fillStyle = sel ? '#fff' : '#333';
+            ctx.fillText(label, W/2, y);
+        });
+
+        ctx.font = '17px Caveat, cursive';
+        ctx.fillStyle = '#888';
+        ctx.fillText('↑ / ↓  to choose   •   SPACE or ENTER to start', W/2, 390);
         ctx.textAlign = 'left';
     }
 
     function draw() {
         drawBG();
         drawPlatforms();
+        if (state === 'menu') { drawMenu(); return; }
         drawRagdolls();
         arrows.forEach(drawArrow);
         drawPlayer(p1);
         drawPlayer(p2);
         drawHUD();
-        if (state === 'start') drawOverlay('Bow Battle!', 'Arrows or get close and use a sword!');
         if (state === 'over' && winner) {
-            const who  = winner === p1 ? 'Blue' : 'Red';
-            const lost = winner === p1 ? 'Red'  : 'Blue';
-            drawOverlay(who + ' Wins!', lost + ' ran out of hearts!');
+            if (botMode) {
+                const youWin = winner === p1;
+                drawOverlay(youWin ? 'You Win!' : 'Bot Wins!', youWin ? 'The bot is defeated!' : 'You ran out of hearts!');
+            } else {
+                const who  = winner === p1 ? 'Blue' : 'Red';
+                const lost = winner === p1 ? 'Red'  : 'Blue';
+                drawOverlay(who + ' Wins!', lost + ' ran out of hearts!');
+            }
         }
     }
 
     // ── Loop ──────────────────────────────────────────────────────────────────
     function loop() { update(); draw(); requestAnimationFrame(loop); }
 
-    init();
-    state = 'start';
+    arrows = []; ragdolls = []; state = 'menu';
     loop();
     </script>
 </body>
